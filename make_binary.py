@@ -4,39 +4,13 @@
 #####################################################
 
 from scipy import stats
+from visualize import *
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import animation
 
 WHITE = 255
 FRAME_ROWS = 896
 FRAME_COLS = 900
-
-
-
-def show_image(im):
-    plt.figure()
-    plt.imshow(im, cmap=plt.cm.gray)
-    plt.show()
-    return im
-
-def display_gray_movie(images):
-
-    fig, ax = plt.subplots()
-    ims = []
-
-    for frame in images:
-        im = ax.imshow(frame, cmap=plt.cm.gray, animated=True)
-        ims.append([im])
-
-    ani = animation.ArtistAnimation(fig, ims, interval=20, blit=True,
-                                    repeat_delay=1000)
-
-    # ani.save('dynamic_images.mp4')
-    ax.set_axis_off()
-    plt.tight_layout()
-    plt.show()
 
 
 def make_noise(random_frames_dir, noise_frame_path, has_np_random_frames, np_random_frames_path):
@@ -53,6 +27,7 @@ def make_noise(random_frames_dir, noise_frame_path, has_np_random_frames, np_ran
     :param np_random_frames_path:  file path, to save/load numpy array contains the random frames.
     :return: return a numpy array represent the noise frame and save it as a .npy file
     '''
+
     print("- - - - make noise step 1 - - - -")
 
     if has_np_random_frames:
@@ -62,10 +37,10 @@ def make_noise(random_frames_dir, noise_frame_path, has_np_random_frames, np_ran
         noise = np.zeros([len(frames_list), FRAME_COLS, FRAME_ROWS])
         i = 0
         for file_frame in frames_list:
-            if i%200 == 0:
+            if i % 200 == 0:
                 print(i)
 
-            frame = np.fromfile(random_frames_dir+'\\'+file_frame, dtype=np.uint8)
+            frame = np.fromfile(random_frames_dir + '\\' + file_frame, dtype=np.uint8)
             frame = frame.reshape([FRAME_COLS, FRAME_ROWS])
             noise[i, :, :] = frame
             i += 1
@@ -90,6 +65,7 @@ def make_noise(random_frames_dir, noise_frame_path, has_np_random_frames, np_ran
     np.save(noise_frame_path, only_noise)
     return only_noise
 
+
 def clean_frame(dirty, only_noise):
     '''
     clean the noise of sample frames of the whole video, from the frame we want to 'clean'
@@ -102,6 +78,7 @@ def clean_frame(dirty, only_noise):
     clean = dirty.astype(float) - only_noise
     clean = np.clip(clean, 0, WHITE)
     return clean
+
 
 def clean2binary(clean, option, fixed_th=0):
     '''
@@ -139,9 +116,9 @@ def clean2binary(clean, option, fixed_th=0):
     if option == 3:
         threshold = fixed_th
 
-    binFrame = (clean > threshold).astype(int)
+    bin_frame = (clean > threshold).astype(int)
     # print(threshold)
-    return threshold, binFrame
+    return threshold, bin_frame
 
 
 def make_bin_event(orig_event, noise):
@@ -160,7 +137,7 @@ def make_bin_event(orig_event, noise):
     # step 1:
     # looking for the best threshold for each frame, and save the maximal threshold.
     for i, frame in enumerate(orig_event):
-        if i%100 == 0:
+        if i % 100 == 0:
             print(i)
         clean = clean_frame(frame, noise)
         clean_list[i, :, :] = clean
@@ -170,9 +147,9 @@ def make_bin_event(orig_event, noise):
 
     print("- - - - make binary event step 1 - - - -")
     # step 2:
-    # binaryze each frame with the maximal threshold
+    # binarize each frame with the maximal threshold
     for j, clean in enumerate(clean_list):
-        if j%100 == 0:
+        if j % 100 == 0:
             print(j)
         th, binary = clean2binary(clean, 3, max_th)
         bin_list[j, :, :] = binary
@@ -180,12 +157,11 @@ def make_bin_event(orig_event, noise):
 
 
 if __name__ == '__main__':
-    random_frames_dir = 'E:\Lab-Shared\Data\FeedingAssay2020\\20200720-f3-2000'
-    np_random_frames_path = '..\output_np\\random_noise.npy'
-    np_noise_frame_path = '..\output_np\\noise_frame.npy'
-    event_path = 'E:\Lab-Shared\Data\FeedingAssay2020\\20200720-f3\\20200720-f3-9.raw'
-    bin_event_path = '..\output_np\\binary_events\\20200720-f3-7.npy'
-
+    random_frames_dir = 'E:\\Lab-Shared\\Data\\FeedingAssay2020\\20200720-f3-2000'
+    np_random_frames_path = '..\\output_np\\random_noise.npy'
+    np_noise_frame_path = '..\\output_np\\noise_frame.npy'
+    event_path = 'E:\\Lab-Shared\\Data\\FeedingAssay2020\\20200720-f3\\20200720-f3-9.raw'
+    bin_event_path = '..\\output_np\\binary_events\\20200720-f3-7.npy'
 
     # if there is no 'noise' frame, create one. The frame is saved as numpy array
     if os.path.exists(np_noise_frame_path):
@@ -193,11 +169,9 @@ if __name__ == '__main__':
     else:
         noise_frame = make_noise(np_noise_frame_path, random_frames_dir, True, np_random_frames_path)
 
-
     # load the raw_date into numpy array
     orig_event = np.fromfile(event_path, dtype=np.uint8)
     orig_event = np.reshape(orig_event, [orig_event.size // (FRAME_ROWS * FRAME_COLS), FRAME_COLS, FRAME_ROWS])
-
 
     # create a new event that contains binary values.
     bin_event = make_bin_event(orig_event, noise_frame)
@@ -207,8 +181,3 @@ if __name__ == '__main__':
     # to display the numpy array
     display_gray_movie(orig_event)
     display_gray_movie(bin_event)
-
-    # todo:
-    #  to save as a movie
-
-
