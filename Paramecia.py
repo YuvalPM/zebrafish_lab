@@ -425,30 +425,13 @@ class Para:
 
 class ParaTracker():
     def __init__(self, start_ind, end_ind, directory, pcw):
-        self.pcw = pcw
         self.directory = directory
         self.all_xy = []
-        self.xyzrecords = []
-        self.framewindow = [start_ind, end_ind]
-        self.para3Dcoords = []
-        self.distance_thresh = 100
-        self.length_thresh = 30
-        self.time_thresh = 60
-        self.filter_width = 5
-        self.paravectors = []
-        self.paravectors_normalized = []
-        self.dots = []
-        self.makemovies = True
-        self.topframes = deque()
-        self.topframes_original = deque()
-        self.velocity_mags = []
-        self.length_map = np.vectorize(lambda a: a.shape[0])
+        self.lifetime_thresh = 30
         self.long_xy = []
-        self.short_xy = []
-        self.before_fish_param_collision = []
         self.after_fish_param_collision = []
-        self.p_t = []
-        self.completed_t = []
+        self.params_list = []
+        self.completed_params = []
         self.collide_w_fish = []
         self.threshold_param_size = 10
 
@@ -458,31 +441,29 @@ class ParaTracker():
         cur_frames_params = [para for para in params if para.area >= self.threshold_param_size]
         # parafilter_top is a list of tuple represents the location of each paramecia in a single frame
 
-        self.before_fish_param_collision.append([])
         self.after_fish_param_collision.append([])
 
         if frame_index == 0:
-            self.p_t = [Para(frame_index, para.centroid, para) for para in cur_frames_params]
+            self.params_list = [Para(frame_index, para.centroid, para) for para in cur_frames_params]
 
-        # p_t is a list of para objects. asks if any elements of contour list are nearby each para p.
+        # params_list is a list of para objects. asks if any elements of contour list are nearby each para.
         else:
+            double_params_list = []
+            for para in self.params_list:
+                para.nearby(cur_frames_params, self.completed_params, frame_index, double_params_list)
 
-            double = []
-            for para in self.p_t:
-
-                para.nearby(cur_frames_params, self.completed_t, frame_index, double)
-
-            self.p_t += double
-            newpara_t = [Para(frame_index, para.centroid, para) for para in cur_frames_params]
+            self.params_list += double_params_list
+            new_params = [Para(frame_index, para.centroid, para) for para in cur_frames_params]
             not_new = []
             # new- is it inside the fish?
             # is it after two param
             # is it after param-fish
 
-            fish = find_fish(frame)  # todo take from sapir's fish
+            fish = find_fish(frame)
 
-            for para in newpara_t:
+            for para in new_params:
                 collision_point = para.fish_collision(fish)
+                #this paramecia is probably after collision with the fish
                 if collision_point is not None:
                     self.after_fish_param_collision[-1].append(collision_point)
                     if len(self.collide_w_fish) > 0:
@@ -491,44 +472,39 @@ class ParaTracker():
                             match.union(para, fish)
                             not_new.append(para)
                             self.collide_w_fish.remove(match)
-                            self.p_t.append(match)
+                            self.params_list.append(match)
 
             for para in not_new:
-                newpara_t.remove(para)
+                new_params.remove(para)
 
-            old_para = [para for para in self.completed_t if not para.completed]
-            self.p_t = self.p_t + newpara_t + old_para
-            new_complete = [para for para in self.p_t if para.completed]
-            self.completed_t = self.completed_t + new_complete
-            self.p_t = [para for para in self.p_t if not para.completed]
-            self.completed_t = [para for para in self.completed_t if para.completed]
-            # current para list p_t is cleaned of records that are complete.
+            old_params = [para for para in self.completed_params if not para.completed]
+            self.params_list = self.params_list + new_params + old_params
+            new_complete = [para for para in self.params_list if para.completed]
+            self.completed_params = self.completed_params + new_complete
+            self.params_list = [para for para in self.params_list if not para.completed]
+            self.completed_params = [para for para in self.completed_params if para.completed]
+            # current para list params_list is cleaned of records that are complete.
 
             # saving params that collide with the fish
-            for para in self.completed_t:
-                if para.completedstmp < frame_index - para.waitmax or len(para.location) < self.length_thresh:
+            for para in self.completed_params:
+                if para.completedstmp < frame_index - para.waitmax or len(para.location) < self.lifetime_thresh:
                     continue
-                fish = find_fish(
-                    bin_event[para.completedstmp - 1])  # todo take sapir's contour to check if this is an eye
+                fish = find_fish(bin_event[para.completedstmp - 1])
 
                 collision_point = para.fish_collision(fish)
                 if collision_point is not None:
                     # this condition is to check if the paramecia is really close to the fish and then we
                     # conclude it is a collision case
-
-                    self.before_fish_param_collision[-1].append(collision_point)
                     self.collide_w_fish.append(para)
                     para.create_prediction()
 
             for para in self.collide_w_fish:
-
-                if para in self.completed_t:
-                    self.completed_t.remove(para)
-                fish = find_fish(
-                    bin_event[para.completedstmp - 1])  # todo take sapir's contour to check if this is an eye
+                if para in self.completed_params:
+                    self.completed_params.remove(para)
+                fish = find_fish(bin_event[para.completedstmp - 1])
                 para.predict_update(frame_index, fish)
 
-    def findpara(self, bin_event):
+    def find_paramecia(self, bin_event):
         for frame_index, frame in enumerate(bin_event):
             if frame_index % 100 == 0:
                 print(frame_index)
@@ -537,37 +513,20 @@ class ParaTracker():
 
         # post-process
         for para in self.collide_w_fish:
-
             para.location = para.location[:para.completedstmp]
             para.region_list = para.region_list[:para.completedstmp]
             para.all_pixel_list = para.all_pixel_list[:para.completedstmp]
-            para.partial_pixel_list = para.partial_pixel_list[:para.completedstmp]#todo maybe we need this information
+            para.partial_pixel_list = para.partial_pixel_list[:para.completedstmp]
             para.certainty = para.partial_pixel_list[:para.completedstmp]
-        all_xy = self.completed_t + self.p_t + self.collide_w_fish
+
+        all_xy = self.completed_params + self.params_list + self.collide_w_fish
         all_xy = sorted(all_xy, key=lambda x: len(x.location))
         all_xy.reverse()
         self.all_xy = [para for para in all_xy if len(para.location) > 0]
+        self.long_xy = [para for para in self.all_xy if len(para.location) >= self.lifetime_thresh]
 
-        self.long_xy = [para for para in self.all_xy if len(para.location) >= self.length_thresh]
+        print("num of paramc:", len(self.all_xy), " after filter:", len(self.long_xy))
 
-        self.short_xy = [para for para in self.all_xy if len(para.location) < self.length_thresh]
-
-        print("num of paramc: ", len(self.all_xy), " after: ", len(self.long_xy))
-
-
-# def generate_10_movies():
-#     noise_frame_path = 'noise_frame.npy'
-#     double_list = []
-#
-#     for i in range(1, 11):
-#         num = str(i)
-#         event_path = 'Z:\Lab-Shared\Data\FeedingAssay2020\\20200720-f3\\20200720-f3-' + num + '.raw'
-#         bin_event_path = '..\output_np\\binary_events\\20200720-f3-' + num + '.npy'
-#         output_path = 'Z:\yuval.pundakmint\extractData\\20200720-f3\\20200720-f3-' + num + '.avi'
-#         generate_movie(event_path, bin_event_path, output_path, noise_frame_path, binary=False)
-#         double_list.append(Para.doubles)
-#
-#     print(double_list)
 
 
 def create_params_data(num, event_path, bin_event_path, noise_frame_path, binary=True):
@@ -582,23 +541,20 @@ def create_params_data(num, event_path, bin_event_path, noise_frame_path, binary
     else:
         bin_event = np.load(bin_event_path)
 
-    print(len(bin_event))
+    print("number of frames:", len(bin_event))
 
-    print("- - - - - - mark paramecium " + num + "- - - - - - -")
+    print("- - - - - - mark paramecium " + num + " - - - - - - -")
     paraTracker = ParaTracker(0, len(bin_event), 0, 0)
-    paraTracker.findpara(bin_event)
-    for para in paraTracker.all_xy:
-        if para.id == 7:
-            para_7 = para
-            break
+    paraTracker.find_paramecia(bin_event)
 
-    return paraTracker.all_xy, paraTracker.long_xy, paraTracker.short_xy, para_7
+
+    return paraTracker.all_xy, paraTracker.long_xy
 
 
 def main_para():
     noise_frame_path = 'noise_frame.npy'
-    event_num = '3'
-    data_path = "C:\\Users\\Yuval\\Documents\\yuval's\\huji\\zebrafish\\parseData\\make_binary\\"
+    event_num = '4'
+    data_path = "..\\"
 
     event_path = data_path + "raw_data\\20200720-f3-"+event_num+".raw"
     bin_event_path = data_path + "output_np\\binary_events\\f3\\20200720-f3-" + event_num + ".npy"
@@ -606,7 +562,7 @@ def main_para():
     output_path = data_path + "output_movie\\f3\\20200720-f3-"+event_num+".avi"
     orig_event = np.fromfile(event_path, dtype=np.uint8)
     orig_event = np.reshape(orig_event, [orig_event.size // (FRAME_ROWS * FRAME_COLS), FRAME_COLS, FRAME_ROWS])
-    params_data, long_params_data, short_params_data, para_7 = create_params_data(event_num, event_path, bin_event_path, noise_frame_path, binary=True)
+    params_data, long_params_data = create_params_data(event_num, event_path, bin_event_path, noise_frame_path, binary=True)
     from_params_data_to_movie(params_data, orig_event, output_path)
 
 if __name__ == '__main__':
