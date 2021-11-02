@@ -1,4 +1,5 @@
 
+
 from visualize import from_params_data_to_movie, mark_points_movie, save_gray_movie, show_image
 from matplotlib import pyplot as plt
 import numpy as np
@@ -19,7 +20,7 @@ def euclidean_distance(a, b):
     dist = np.sqrt(np.sum(np.power((a - b), 2), axis=1))
     return dist
 
-def perfect_match_equel(list_a, list_b):
+def find_perfect_match_equel(list_a, list_b):
     best_permute = list_b
     min_score = 100
     np_a = np.array(list_a)
@@ -35,11 +36,11 @@ def perfect_match_equel(list_a, list_b):
     return min_score, best_permute
 
 
-def perfect_match(list_a, list_b):
+def find_perfect_match(list_a, list_b):
     perfect = {}
     if len(list_a) == len(list_b):
         best_permute_a = list_a
-        score, best_permute_b = perfect_match_equel(list_a, list_b)
+        score, best_permute_b = find_perfect_match_equel(list_a, list_b)
 
     else:
         if len(list_a) < len(list_b):
@@ -49,7 +50,7 @@ def perfect_match(list_a, list_b):
             min_score = 100
             for i in range(len(list_b)-len(list_a)):
                 permute_b = list_b[i:len_a+i]
-                score, permute_b = perfect_match_equel(list_a, permute_b)
+                score, permute_b = find_perfect_match_equel(list_a, permute_b)
                 if score < min_score:
                     min_score = score
                     best_permute_b = permute_b
@@ -60,7 +61,7 @@ def perfect_match(list_a, list_b):
             min_score = 100
             for i in range(len(list_a) - len(list_b)):
                 permute_a = list_a[i:len_b + i]
-                score, permute_a = perfect_match_equel(list_b, permute_a)
+                score, permute_a = find_perfect_match_equel(list_b, permute_a)
                 if score < min_score:
                     min_score = score
                     best_permute_a = permute_a
@@ -71,6 +72,19 @@ def perfect_match(list_a, list_b):
 
 
 class Para:
+    """
+    This class represents a single Paramecia.
+    It holds information and history for the entire event.
+    The purpose is to keep track of a specific paramecia while dealing some of these challenges:
+    1. when there are two (or more) paramecia in the next frames that can be good candidate to be this current one.
+    2. there are no good candidate for this paramecia in the next frame: collision of two paramecium so they look
+     like one, collision of this paramecia with the fish, collision of this paramecia with the plate, or too small
+     paramecia so it looks like a dust. (due too threshold for the binarization of the event or threshold for the
+     size of a paramecia.)
+
+     In most of the frames, the paramecia's location is determined by the white spots in the image,
+     but when the paramecia disapear for a few frames, it determind by the last location or by a simple prediction.
+    """
     ids = 0
     FISH = 0
     PARA = 1
@@ -85,7 +99,6 @@ class Para:
         self.id = Para.ids
         Para.ids += 1
         self.location = [coord]
-        self.direction = []
         self.lastcoord = coord
         self.timestamp = timestmp
         self.color = [np.random.randint(0, 256), np.random.randint(0, 256), np.random.randint(0, 256)]
@@ -99,13 +112,12 @@ class Para:
         # todo: is it the best max?
         self.thresh = 5
 
+        self.fish_thresh = 12
+
         self.double_thresh = 10
         self.double = False
-        self.double_smp = -1
         self.num_double = 1
 
-        # the delta of frames to calculate the direction vector
-        self.direction_thresh = 1
         self.region_list = [region]
         self.all_pixel_list = [region.coords.astype(np.float)]
         self.partial_pixel_list = [region.coords]
@@ -115,10 +127,9 @@ class Para:
         self.predict_x_direction = None
         self.predict_y_direction = None
 
-    def endrecord(self, timestmp):
+    def end_record(self, timestmp):
         # CHOPS OFF THE HANGING LEN(WAITMAX) PORTION WHERE IT COULD'NT FIND PARTNER
         self.location = self.location[:-self.waitmax]
-        self.direction = self.direction[:-self.waitmax]
         self.region_list = self.region_list[:-self.waitmax]
         self.all_pixel_list = self.all_pixel_list[:-self.waitmax]
         self.partial_pixel_list = self.partial_pixel_list[:-self.waitmax]
@@ -126,59 +137,72 @@ class Para:
         self.completed = True
         self.completedstmp = timestmp-self.waitmax
 
-    def nearby(self, cont_list, completed_list, timestmp, double_options, maybe_double):
+    def nearby(self, cont_list, completed_list, timestmp, double_options):
+        """
+        :param cont_list: list of contours/regions found in the image, represents potential paramecium.
+       The object region contains geometric information about the contour, and about the location in the given image
+        as returned in the function skimage.measure.regionprops.
+       Documentation: https://scikit-image.org/docs/dev/api/skimage.measure.html#skimage.measure.regionprops
+        :param completed_list: list of params that are not found for 8 frames and are not recorded any more.
+        :param timestmp: current frame
+        :param double_options: empty list to fill with paramecium marked as double
+        :return:
+        """
 
         # first, search the list of contours found in the image to see if any of them are near
         # the previous position of this Para.
+        # loc_list is a list of tuples represents the center point of the paramecium
         loc_list = [para.centroid for para in cont_list]
 
+        # second, filter only the short distance contours to be the potential next frame paramecia,
+        # and save those in np.array
         if len(cont_list) == 0:
-            pcoords = np.array([])
-            pcoords_para = np.array([])
+            para_center_coords = np.array([])
+            para_regions = np.array([])
         else:
             loc_arr = np.array(loc_list)
-            para_arr = np.array(cont_list)
+            cont_arr = np.array(cont_list)
             dist = euclidean_distance(loc_arr, np.array(self.lastcoord))
 
-            pcoords = loc_arr[dist < self.thresh]
-            pcoords_para = para_arr[dist < self.thresh]
+            para_center_coords = loc_arr[dist < self.thresh]
+            para_regions = cont_arr[dist < self.thresh]
 
         # if there's nothing found, add 1 to the waitindex, and say current position is the last position
-        if pcoords.shape[0] == 0:
+        if para_center_coords.shape[0] == 0:
 
             self.location.append(self.lastcoord)
             self.region_list.append(self.region_list[-1])
             self.all_pixel_list.append(self.all_pixel_list[-1])
             self.partial_pixel_list.append(self.all_pixel_list[-1])
             self.certainty.append(self.REPEAT_LAST)
-            if len(self.location) > 1:
-                self.direction.append(np.array([0, 0]))
+
             if self.waitindex == self.waitmax:
                 # end record if you've gone 'waitmax' frames without finding anything.
                 # this value greatly changes things. its a delicate balance between losing the para and waiting too
                 # long while another para enters
-                self.endrecord(timestmp)
+                self.end_record(timestmp)
             self.waitindex += 1
 
         # this case is only one contour is within the threshold distance to this Para.
-        elif pcoords.shape[0] == 1:
+        elif para_center_coords.shape[0] == 1:
 
-            newcoord = pcoords[0]
-            newreg = pcoords_para[0]
-            self.update(newcoord, newreg, self.FROM_IMG)
-            cont_list.remove(newreg)
+            new_coord = para_center_coords[0]
+            new_reg = para_regions[0]
+            self.update(new_coord, new_reg, self.FROM_IMG)
+            cont_list.remove(new_reg)
 
-        # this case is that two or more contours fit threshold distance.
-        elif pcoords.shape[0] > 1:
-            # self.double = True
-            # print('double: where, ', self.lastcoord, 'when, ', self.timestamp+len(self.location))
-            if self not in maybe_double:
-                maybe_double.append(self)
+        # This case is when two or more contours fit threshold distance.
+        # That means that maybe the paramecia is actually two or more paramecium after collision so it looked like
+        # there is only one until now. Try to match between paramecium that were stop recorded potentially because
+        # of this collision, and between new paramecium that found in this current frame.
+        elif para_center_coords.shape[0] > 1:
+            # for now this information is not used. But we should use it to better tracking
+            self.double = True
+
             # create list of close 'doubles'
-
-            after_potential = pcoords_para
+            after_potential = para_regions
             before_potential = self.find_close_before_double(completed_list, timestmp)
-            para_reg_match = self.match_double(before_potential, after_potential, timestmp)
+            para_reg_match = self.match_double(before_potential, after_potential, timestmp) # para_reg_match is a dictionary
             for para in para_reg_match:
                 completed_list.remove(para)
                 double_options.append(para)
@@ -187,6 +211,18 @@ class Para:
         return cont_list
 
     def match_double(self, before, after, cur_frame):
+        """
+        This function matches between old paramecium that meybe collided with this (self) paramecia, and between new
+        paramecium that are now very close to this (self) paramecia, potentially just finished the 'collision'.
+        For every matched pair of 'before' and 'after' paramecium the function merges their data as one paramecia,
+        and fill in the missing data with this (self) paramecia data as they where double paramecium tracked together.
+
+        :param before: List of paramecium that where close to the paramecia when completed the record
+        :param after: List of regions represents potential paramecium after the collision
+        :param cur_frame: The frame where more then one paramecium appeared close the a single paramecia
+        :return: Dictionary with key- Para object of a 'before' paramecia, and value- region object of
+         an 'after' paramecia.
+        """
         predicted_location = []
         for para in before+[self]:
             para.create_prediction()
@@ -195,14 +231,18 @@ class Para:
             predicted_location.append((x, y))
 
         real_location = [reg.centroid for reg in after]
-        perfect = perfect_match(predicted_location, real_location)
+
+        # perfect_match is a dictionary with key- tuple represents the predicted center of a 'before' paramecia,
+        # and value- tuple represents the real center of an 'after' paramecia.
+        perfect_match = find_perfect_match(predicted_location, real_location)
         para_reg_match = {}
-        for predict in perfect:
-            para_index = predicted_location.index(predict)
-            para = (before+[self])[para_index]
-            real_coord = perfect[predict]
+        for predict in perfect_match:
+            real_coord = perfect_match[predict]
             real_index = real_location.index(real_coord)
             real_reg = after[real_index]
+
+            para_index = predicted_location.index(predict)
+            para = (before + [self])[para_index]
 
             if para.completed:
                 para_reg_match[para] = real_reg
@@ -214,10 +254,17 @@ class Para:
         return para_reg_match
 
     def find_close_before_double(self, completed_list, cur_frame):
+        """
+        creates a list of all the paramecium that at the frame they where last tracked, they were close to this
+         paramecia and potentially collided, so they looked like one paramecia.
+        :param completed_list: list of paramecium that are not recorded anymore
+        :param cur_frame:
+        :return: list of paramecium that are not recorded anymore and where close to this paramecia when last recorded.
+        """
         close_before_double = []
         for para in completed_list:
             frame_before = cur_frame-para.completedstmp
-            if frame_before > len(self.location):
+            if frame_before > len(self.location) or frame_before < 0:
                 continue
             dist = euclidean_distance(np.array([para.lastcoord]), self.location[-frame_before])
             if dist[0] < self.double_thresh:
@@ -226,6 +273,10 @@ class Para:
         return close_before_double
 
     def param_trajectory(self):
+        """
+        plot the trajectory of the paramecia
+        :return:
+        """
         x = [loc[1] for loc in self.location]
         y = [loc[0] for loc in self.location]
 
@@ -236,16 +287,25 @@ class Para:
 
 
     def fish_collision(self, fish):
+        """
+        Finds collision points with the fish
+        :param fish_coords: ndarray of tuples represents all the fish's pixels.
+        :return: tuple of the collision point
+        """
+        fish_coords = fish.coords
+        dist = euclidean_distance(fish_coords, np.array(self.lastcoord))
 
-        dist = euclidean_distance(fish.coords, np.array(self.lastcoord))
-        if min(dist) < 10:
-            return fish.coords[dist == min(dist)][0]
-        if min(dist) < self.thresh+2:
-            return fish.coords[dist == min(dist)][0]
+        if min(dist) < self.fish_thresh:  # todo find the best threshold.
+            return fish_coords[dist == min(dist)][0]
         else:
             return None
 
+
     def create_prediction(self):
+        """
+        assume the paramecia trajectory is a straight line approximately, predict location and direction
+        :return:
+        """
         fitt_from = (len(self.location) // 3) * 2
         predict_x, predict_y, x_direction, y_direction = predict2d(np.arange(fitt_from, len(self.location)), self.location[fitt_from:])
         self.predict_x = predict_x
@@ -253,8 +313,14 @@ class Para:
         self.predict_x_direction = x_direction
         self.predict_y_direction = y_direction
 
-    def predict_update(self, go_to_frame, fish):
-        for i in range(len(self.location), go_to_frame):
+    def predict_update(self, cur_frame, fish):
+        """
+         fill in the missing the data of a paramecia using prediction, from its last location until current frame
+         :param cur_frame: the most current frame to fill the predicted locarion
+         :param fish_coords: fish's pixels
+         :return:
+         """
+        for i in range(len(self.location), cur_frame - self.timestamp):  # complete only missing relative to timestamp):
             x_predict = self.predict_x(i)
             y_predict = self.predict_y(i)
             new_pixels = np.array(self.all_pixel_list[i-1]).astype(np.float)
@@ -270,6 +336,13 @@ class Para:
 
 
     def predict_visible_pixels(self, fish_region, last_pixels):
+        """
+         for collision between a paramecia and a fish, predict the pixels of the paramecia thar are not hidden
+         by the fish.
+         :param fish_region: fish's pixels
+         :param last_pixels: paramecia's pixels from a frame before
+         :return: array of tuples represent the pixels that belong to the visible paramecia
+         """
 
         if len(last_pixels) == 0:
             return last_pixels
@@ -288,43 +361,33 @@ class Para:
 
 
     def find_match_collision(self, before):
+        """
+        self is paramecia that probably after collision with the fish, and this function finds its para object
+        that disappeared before the collision.
+        # todo this function should be improved
+        :param before: list of candidates paramecium, which disappeared because of collision with the fish
+        and one of them is probably this 'new' paramecia.
+        :return:
+        """
         before_location = np.array([para.lastcoord for para in before])
         dist = euclidean_distance(self.lastcoord, before_location)
 
-        if min(dist) < 10:
+        if min(dist) < self.double_thresh:
             return np.array(before)[dist == min(dist)][0]
         else:
             return None
 
-    def find_why_completed(self, fish, params_list):
-        params = np.array([para.lastcoord for para in params_list])
-
-        dist_fish = euclidean_distance(fish.coords, np.array(self.lastcoord))
-        min_fish = min(dist_fish)
-        if len(params_list) == 0:
-            if min_fish < 10:
-                return Para.FISH
-            else:
-                return Para.ELSE
-
-        else:
-            dist_params = euclidean_distance(self.lastcoord, params)
-            min_params = min(dist_params)
-
-            if min_fish < min_params:
-                if min_fish < 10:
-                    return Para.FISH
-                else:
-                    return Para.ELSE
-
-            else:
-                if min_params < 10:
-                    return Para.PARA
-                else:
-                    return Para.ELSE
-
     def union(self, other, fish):
-        #todo maybe update more accurate with the new data
+        """
+        this union happens only to union paramecia before and after collision with the fish.
+        this function not only unit the before and after paramecium, but also predict the visible pixels at each
+        frame when only some part of the paramecia is visible and the rest is hidden by the fish.
+        :param other:
+        :param fish_coords:
+        :return:
+        """
+        # todo maybe update more accurate with the new data: the filled data until new_coord and new_reg is only
+        #  based on prediction from the data before, but not with the new data.
         new_coord = other.lastcoord
         new_reg = other.region_list[-1]
 
@@ -339,14 +402,20 @@ class Para:
 
 
     def update(self, new_coord, new_reg, certainty):
+        """
+         update data about the current frame
+         :param new_coord: tuple of double represent the center point
+         :param new_reg: region object represents topographic information about the paramecia
+         :param certainty: how the location determined
+         :return:
+         """
 
         self.location.append(new_coord)
         self.region_list.append(new_reg)
         self.all_pixel_list.append(new_reg.coords.astype(np.float))
         self.partial_pixel_list.append(new_reg.coords)
         self.certainty.append(certainty)
-        if len(self.location) > 1:
-            self.direction.append(np.array(new_coord) - self.lastcoord)
+
         self.lastcoord = new_coord
 
         self.waitindex = 0
@@ -354,10 +423,7 @@ class Para:
         self.completed = False
 
 
-
-
-
-class ParaMaster():
+class ParaTracker():
     def __init__(self, start_ind, end_ind, directory, pcw):
         self.pcw = pcw
         self.directory = directory
@@ -381,7 +447,6 @@ class ParaMaster():
         self.short_xy = []
         self.before_fish_param_collision = []
         self.after_fish_param_collision = []
-        self.maybe_double = []
         self.p_t = []
         self.completed_t = []
         self.collide_w_fish = []
@@ -405,7 +470,7 @@ class ParaMaster():
             double = []
             for para in self.p_t:
 
-                para.nearby(cur_frames_params, self.completed_t, frame_index, double, self.maybe_double)
+                para.nearby(cur_frames_params, self.completed_t, frame_index, double)
 
             self.p_t += double
             newpara_t = [Para(frame_index, para.centroid, para) for para in cur_frames_params]
@@ -520,20 +585,20 @@ def create_params_data(num, event_path, bin_event_path, noise_frame_path, binary
     print(len(bin_event))
 
     print("- - - - - - mark paramecium " + num + "- - - - - - -")
-    paraMaster = ParaMaster(0, len(bin_event), 0, 0)
-    paraMaster.findpara(bin_event)
-    for para in paraMaster.all_xy:
+    paraTracker = ParaTracker(0, len(bin_event), 0, 0)
+    paraTracker.findpara(bin_event)
+    for para in paraTracker.all_xy:
         if para.id == 7:
             para_7 = para
             break
 
-    return paraMaster.all_xy, paraMaster.long_xy, paraMaster.short_xy, para_7
+    return paraTracker.all_xy, paraTracker.long_xy, paraTracker.short_xy, para_7
 
 
 def main_para():
     noise_frame_path = 'noise_frame.npy'
-    event_num = '1'
-    data_path = "..\\"
+    event_num = '3'
+    data_path = "C:\\Users\\Yuval\\Documents\\yuval's\\huji\\zebrafish\\parseData\\make_binary\\"
 
     event_path = data_path + "raw_data\\20200720-f3-"+event_num+".raw"
     bin_event_path = data_path + "output_np\\binary_events\\f3\\20200720-f3-" + event_num + ".npy"
