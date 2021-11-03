@@ -1,2 +1,5 @@
 # zebrafish_lab
-in process. new version will be up soon
+Given a zebra fish hunts paramecia event, tracking the paramecia.
+An output example:
+
+[short_example.zip](https://github.com/YuvalPM/zebrafish_lab/files/7470693/short_example.zip)
